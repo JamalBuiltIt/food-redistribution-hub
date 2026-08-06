@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+/* Custom Leaflet Routing Machine Panel styling */
+.leaflet-routing-container {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
+  border: 1px solid #e2e8f0 !important;
+  font-family: inherit !important;
+  padding: 10px !important;
+  max-width: 300px !important;
+  font-size: 12px !important;
+}
+
+.leaflet-routing-alt h2 {
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
+}
+
+.leaflet-routing-icon {
+  filter: hue-rotate(90deg); /* Colorizes turn arrows to match theme */
+}
