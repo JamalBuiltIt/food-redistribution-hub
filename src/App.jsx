@@ -146,6 +146,42 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
+  const [userProfiles, setUserProfiles] = useState({});
+  const [activeToast, setActiveToast] = useState(null); // Floating pop-up notification state
+
+  useEffect(() => {
+    const syncUserProfile = async () => {
+      if (!currentUser?.username) return;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('username', currentUser.username)
+        .maybeSingle();
+
+      if (profile) {
+        const mergedUser = {
+          ...currentUser,
+          ...profile,
+        };
+        setCurrentUser(mergedUser);
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(mergedUser));
+      }
+    };
+
+    syncUserProfile();
+  }, [currentUser?.username]);
+
+  const handleProfileUpdated = (updatedFields) => {
+    const updatedUser = {
+      ...currentUser,
+      ...updatedFields,
+      avatar_url: updatedFields.avatar_url || currentUser.avatar_url,
+      display_name: updatedFields.display_name || currentUser.display_name,
+    };
+    setCurrentUser(updatedUser);
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updatedUser));
+  };
+
   const [appMode, setAppMode] = useState('surplus'); // 'surplus' | 'chef'
   const [items, setItems] = useState([]);
   const [chefListings, setChefListings] = useState([]);
@@ -184,7 +220,35 @@ export default function App() {
     phone: '',
   });
 
-  // Prompt Notification Permissions & Fetch Subscriptions
+  const fetchProfilesForUsernames = async (usernames) => {
+    if (!usernames || usernames.length === 0) return;
+    const uniqueNames = [...new Set(usernames)].filter((n) => n && !userProfiles[n]);
+    if (uniqueNames.length === 0) return;
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .in('username', uniqueNames);
+
+    if (data && data.length > 0) {
+      setUserProfiles((prev) => {
+        const next = { ...prev };
+        data.forEach((p) => {
+          next[p.username] = p;
+        });
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    const usernames = [
+      ...items.map((i) => i.donor),
+      ...chefListings.map((c) => c.chef_name),
+    ];
+    fetchProfilesForUsernames(usernames);
+  }, [items, chefListings]);
+
   useEffect(() => {
     if (currentUser) {
       requestPushPermission();
@@ -204,7 +268,6 @@ export default function App() {
     }
   };
 
-  // Toggle Subscriptions & Trigger Push Alerts
   const handleToggleSubscribe = async (donorUsername) => {
     if (!currentUser) return;
 
@@ -235,7 +298,7 @@ export default function App() {
     }
   };
 
-  // Listen to realtime notifications from Supabase table
+  // Real-time notification subscriber & in-app popup trigger
   useEffect(() => {
     if (!currentUser) return;
 
@@ -252,6 +315,7 @@ export default function App() {
         (payload) => {
           const notif = payload.new;
           sendBrowserPushNotification(notif.title, notif.body);
+          setActiveToast(notif); // Triggers the on-screen pop-up banner!
         }
       )
       .subscribe();
@@ -261,7 +325,6 @@ export default function App() {
     };
   }, [currentUser]);
 
-  // GPS Geolocation watch
   useEffect(() => {
     if (!navigator.geolocation) return;
 
@@ -282,7 +345,6 @@ export default function App() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // Fetch surplus items
   useEffect(() => {
     const fetchItems = async () => {
       let { data, error } = await supabase
@@ -314,7 +376,6 @@ export default function App() {
     return () => supabase.removeChannel(channel);
   }, []);
 
-  // Fetch home chef listings
   useEffect(() => {
     fetchChefListings();
 
@@ -363,12 +424,11 @@ export default function App() {
 
       if (error) return;
 
-      // Push notification to Donor
       await supabase.from('notifications').insert([
         {
           user_id: item.donor,
           type: 'ITEM_CLAIMED',
-          title: '🎉 Item Reserved!',
+          title: '📦 Item Reserved!',
           body: `${currentUser.username} reserved your item "${item.title}".`,
         },
       ]);
@@ -488,7 +548,6 @@ export default function App() {
       setShowSurplusModal(false);
       setPreviewCoords(null);
 
-      // Trigger Push Notifications to all Subscribers
       const { data: subscribers } = await supabase
         .from('donor_subscriptions')
         .select('subscriber_id')
@@ -498,7 +557,7 @@ export default function App() {
         const notificationsToInsert = subscribers.map((sub) => ({
           user_id: sub.subscriber_id,
           type: 'NEW_POST',
-          title: `🚨 First Dibs from @${currentUser.username}!`,
+          title: `✨ First Dibs from @${currentUser.username}!`,
           body: `New listing: "${formData.title}" was just posted!`,
         }));
 
@@ -607,7 +666,6 @@ export default function App() {
             <span className="hidden sm:inline">Near Me</span>
           </button>
 
-          {/* CLICKABLE USER AVATAR & HANDLE */}
           <button
             onClick={() => setViewingProfileUser(currentUser.username)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl border transition-all hover:scale-105 ${
@@ -617,11 +675,11 @@ export default function App() {
             }`}
           >
             <img
-              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.username}`}
+              src={currentUser.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.username}`}
               alt={currentUser.username}
-              className="w-6 h-6 rounded-full bg-slate-300"
+              className="w-6 h-6 rounded-full bg-slate-300 object-cover"
             />
-            <span className="text-xs font-bold">{currentUser.username}</span>
+            <span className="text-xs font-bold">{currentUser.display_name || currentUser.username}</span>
           </button>
 
           <button
@@ -734,112 +792,124 @@ export default function App() {
 
             <div key={appMode} className="space-y-4 flex-1 animate-fade-in">
               {isChefTheme
-                ? filteredChefItems.map((plate) => (
-                    <div
-                      key={plate.id}
-                      className="p-4 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-sm hover:shadow-md transition-shadow"
-                    >
-                      {plate.image_url && (
-                        <img
-                          src={plate.image_url}
-                          alt={plate.title}
-                          className="w-full h-36 object-cover rounded-xl mb-3"
-                        />
-                      )}
-                      <div className="flex justify-between items-start">
-                        {/* CLICKABLE CHEF SOCIAL BADGE */}
-                        <button
-                          onClick={() => setViewingProfileUser(plate.chef_name)}
-                          className="text-[10px] font-extrabold px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl flex items-center gap-1.5 transition-colors"
-                        >
+                ? filteredChefItems.map((plate) => {
+                    const chefProf = userProfiles[plate.chef_name];
+                    const chefAvatar = chefProf?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${plate.chef_name}`;
+                    const chefDisplayName = chefProf?.display_name || plate.chef_name;
+
+                    return (
+                      <div
+                        key={plate.id}
+                        className="p-4 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-sm hover:shadow-md transition-shadow"
+                      >
+                        {plate.image_url && (
                           <img
-                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${plate.chef_name}`}
-                            className="w-4 h-4 rounded-full"
+                            src={plate.image_url}
+                            alt={plate.title}
+                            className="w-full h-36 object-cover rounded-xl mb-3"
                           />
-                          <span>Chef @{plate.chef_name}</span>
-                        </button>
-                        <span className="text-base font-black text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-xl">
-                          ${parseFloat(plate.price).toFixed(2)}
-                        </span>
-                      </div>
-                      <h3 className="font-bold text-slate-900 mt-2 text-base">{plate.title}</h3>
-                      <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5 text-amber-600 shrink-0" /> {plate.address}
-                      </p>
-
-                      <div className="flex justify-between items-center mt-4 pt-3 border-t border-amber-100 text-xs">
-                        <span className="font-bold text-amber-900 flex items-center gap-1">
-                          <ShoppingBag className="w-3.5 h-3.5" /> {plate.available_portions} left
-                        </span>
-                        <button
-                          onClick={() => handleOrderChefPlate(plate)}
-                          disabled={plate.available_portions <= 0}
-                          className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:bg-slate-300 transition-colors"
-                        >
-                          {plate.available_portions > 0 ? 'Order Plate' : 'Sold Out'}
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                : filteredItems.map((item) => (
-                    <div
-                      key={item.id}
-                      className="p-4 rounded-2xl border bg-white border-slate-200 shadow-sm hover:shadow-md transition-shadow"
-                    >
-                      {item.imageUrl && (
-                        <img
-                          src={item.imageUrl}
-                          alt={item.title}
-                          className="w-full h-32 object-cover rounded-xl mb-3"
-                        />
-                      )}
-                      <div className="flex justify-between items-start">
-                        <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
-                          {item.category}
-                        </span>
-
-                        {/* CLICKABLE DONOR SOCIAL BADGE */}
-                        {item.donor && (
+                        )}
+                        <div className="flex justify-between items-start">
                           <button
-                            onClick={() => setViewingProfileUser(item.donor)}
-                            className="text-[11px] font-bold text-slate-600 hover:text-emerald-600 flex items-center gap-1"
+                            onClick={() => setViewingProfileUser(plate.chef_name)}
+                            className="text-[10px] font-extrabold px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl flex items-center gap-1.5 transition-colors"
                           >
                             <img
-                              src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${item.donor}`}
-                              className="w-4 h-4 rounded-full"
+                              src={chefAvatar}
+                              className="w-4 h-4 rounded-full object-cover bg-white"
+                              alt=""
                             />
-                            @{item.donor}
+                            <span>Chef {chefDisplayName}</span>
                           </button>
-                        )}
-                      </div>
-                      <h3 className="font-bold text-slate-800 mt-2 text-base">{item.title}</h3>
-                      <p className="text-xs text-slate-600 flex items-center gap-1 mt-1">
-                        <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> {item.address}
-                      </p>
+                          <span className="text-base font-black text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-xl">
+                            ${parseFloat(plate.price).toFixed(2)}
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-slate-900 mt-2 text-base">{plate.title}</h3>
+                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                          <MapPin className="w-3.5 h-3.5 text-amber-600 shrink-0" /> {plate.address}
+                        </p>
 
-                      <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
-                        <LiveCountdown expiresAt={item.claimExpiresAt || item.expiresAt || item.expires_at} />
-
-                        <div className="flex items-center gap-2">
-                          {item.isClaimed && (
-                            <button
-                              onClick={() => setActiveChatOrder(item)}
-                              className="flex items-center gap-1 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs rounded-xl transition-colors border border-emerald-200"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" /> Chat
-                            </button>
-                          )}
+                        <div className="flex justify-between items-center mt-4 pt-3 border-t border-amber-100 text-xs">
+                          <span className="font-bold text-amber-900 flex items-center gap-1">
+                            <ShoppingBag className="w-3.5 h-3.5" /> {plate.available_portions} left
+                          </span>
                           <button
-                            onClick={() => handleClaim(item)}
-                            disabled={item.isClaimed}
-                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-xl disabled:bg-slate-300 transition-colors"
+                            onClick={() => handleOrderChefPlate(plate)}
+                            disabled={plate.available_portions <= 0}
+                            className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:bg-slate-300 transition-colors"
                           >
-                            {item.isClaimed ? 'Reserved' : 'Claim Item'}
+                            {plate.available_portions > 0 ? 'Order Plate' : 'Sold Out'}
                           </button>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })
+                : filteredItems.map((item) => {
+                    const donorProf = userProfiles[item.donor];
+                    const donorAvatar = donorProf?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${item.donor}`;
+                    const donorDisplayName = donorProf?.display_name || item.donor;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="p-4 rounded-2xl border bg-white border-slate-200 shadow-sm hover:shadow-md transition-shadow"
+                      >
+                        {item.imageUrl && (
+                          <img
+                            src={item.imageUrl}
+                            alt={item.title}
+                            className="w-full h-32 object-cover rounded-xl mb-3"
+                          />
+                        )}
+                        <div className="flex justify-between items-start">
+                          <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
+                            {item.category}
+                          </span>
+
+                          {item.donor && (
+                            <button
+                              onClick={() => setViewingProfileUser(item.donor)}
+                              className="text-[11px] font-bold text-slate-600 hover:text-emerald-600 flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-100"
+                            >
+                              <img
+                                src={donorAvatar}
+                                className="w-4 h-4 rounded-full object-cover bg-white"
+                                alt=""
+                              />
+                              {donorDisplayName}
+                            </button>
+                          )}
+                        </div>
+                        <h3 className="font-bold text-slate-800 mt-2 text-base">{item.title}</h3>
+                        <p className="text-xs text-slate-600 flex items-center gap-1 mt-1">
+                          <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> {item.address}
+                        </p>
+
+                        <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100">
+                          <LiveCountdown expiresAt={item.claimExpiresAt || item.expiresAt || item.expires_at} />
+
+                          <div className="flex items-center gap-2">
+                            {item.isClaimed && (
+                              <button
+                                onClick={() => setActiveChatOrder(item)}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs rounded-xl transition-colors border border-emerald-200"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" /> Chat
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleClaim(item)}
+                              disabled={item.isClaimed}
+                              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-xl disabled:bg-slate-300 transition-colors"
+                            >
+                              {item.isClaimed ? 'Reserved' : 'Claim Item'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
             </div>
           </div>
 
@@ -866,14 +936,24 @@ export default function App() {
         </div>
       )}
 
-      {/* SOCIAL PROFILE MODAL */}
+      {/* SOCIAL PROFILE MODAL (WITH INSTAGRAM-STYLE DM TRIGGER) */}
       {viewingProfileUser && (
         <UserProfileModal
           targetUsername={viewingProfileUser}
           currentUser={currentUser}
           isSubscribed={subscribedDonors.includes(viewingProfileUser)}
           onToggleSubscribe={handleToggleSubscribe}
+          onOpenChat={(targetUsername) => {
+            setViewingProfileUser(null);
+            setActiveChatOrder({
+              id: `dm_${[currentUser.username, targetUsername].sort().join('_')}`,
+              title: `Direct Message with @${targetUsername}`,
+              donor: targetUsername,
+              isDirectDm: true,
+            });
+          }}
           onClose={() => setViewingProfileUser(null)}
+          onProfileUpdated={handleProfileUpdated}
         />
       )}
 
@@ -1125,6 +1205,55 @@ export default function App() {
           currentUser={currentUser}
           onClose={() => setActiveChatOrder(null)}
         />
+      )}
+
+      {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
+      {activeToast && (
+        <div className="fixed bottom-6 right-6 bg-slate-900 text-white p-4 rounded-3xl shadow-2xl z-[999999] max-w-sm w-full border border-slate-700 flex flex-col gap-2 animate-bounce-in">
+          <div className="flex justify-between items-start">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+              <h4 className="font-bold text-xs text-emerald-400 uppercase tracking-wider">{activeToast.title}</h4>
+            </div>
+            <button
+              onClick={() => setActiveToast(null)}
+              className="text-slate-400 hover:text-white p-1 rounded-xl"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <p className="text-xs text-slate-300 font-medium">{activeToast.body}</p>
+
+          <div className="flex justify-end gap-2 mt-1">
+            {(activeToast.type === 'DIRECT_MESSAGE' || activeToast.type === 'NEW_MESSAGE') && (
+              <button
+                onClick={() => {
+                  const match = activeToast.title.match(/@([a-zA-Z0-9_-]+)/);
+                  const senderUsername = match ? match[1] : null;
+
+                  if (senderUsername) {
+                    setActiveChatOrder({
+                      id: `dm_${[currentUser.username, senderUsername].sort().join('_')}`,
+                      title: `Direct Message with @${senderUsername}`,
+                      donor: senderUsername,
+                      isDirectDm: true,
+                    });
+                  }
+                  setActiveToast(null);
+                }}
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
+              >
+                <MessageSquare className="w-3.5 h-3.5" /> Open Chat
+              </button>
+            )}
+            <button
+              onClick={() => setActiveToast(null)}
+              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

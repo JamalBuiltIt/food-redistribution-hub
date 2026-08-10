@@ -98,19 +98,36 @@ export default function UserProfileModal({
 
     setSubscriberCount(count || 0);
 
+    // Fetch surplus items
     const { data: surplus } = await supabase
       .from('surplus_items')
       .select('*')
       .eq('donor', targetUsername)
       .eq('status', 'available');
 
+    // Filter out claimed or expired surplus items
+    const now = Date.now();
+    const validSurplus = (surplus || []).filter((item) => {
+      if (item.isClaimed || item.status !== 'available') return false;
+      const expiry = item.expiresAt || item.expires_at;
+      if (expiry && new Date(expiry).getTime() <= now) return false;
+      return true;
+    });
+
+    // Fetch chef listings
     const { data: chefItems } = await supabase
       .from('home_chef_listings')
       .select('*')
       .eq('chef_name', targetUsername)
       .gt('available_portions', 0);
 
-    setUserListings([...(surplus || []), ...(chefItems || [])]);
+    // Filter out sold-out or zero-portion chef plates
+    const validChefItems = (chefItems || []).filter((item) => {
+      if (item.status === 'sold_out' || item.available_portions <= 0) return false;
+      return true;
+    });
+
+    setUserListings([...validSurplus, ...validChefItems]);
     setIsLoading(false);
   };
 
@@ -122,7 +139,6 @@ export default function UserProfileModal({
 
       setUploadingAvatar(true);
       const fileExt = file.name.split('.').pop();
-      // FIXED: Use a clean filename without duplicating the bucket name in the path
       const fileName = `${targetUsername}-${Date.now()}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
@@ -187,7 +203,6 @@ export default function UserProfileModal({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Stock photo fallback generator for listings lacking photos
   const getListingStockPhoto = (item) => {
     if (item.imageUrl || item.image_url) return item.imageUrl || item.image_url;
     const title = (item.title || '').toLowerCase();

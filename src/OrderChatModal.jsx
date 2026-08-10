@@ -6,6 +6,7 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [sendError, setSendError] = useState('');
   const chatEndRef = useRef(null);
 
   // Auto-scroll to latest message
@@ -21,10 +22,12 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       const { data, error } = await supabase
         .from('messages')
         .select('*')
-        .eq('order_id', order.id)
+        .eq('order_id', String(order.id))
         .order('created_at', { ascending: true });
 
-      if (!error && data) {
+      if (error) {
+        console.error('Error fetching messages:', error);
+      } else if (data) {
         setMessages(data);
       }
       setIsLoading(false);
@@ -33,7 +36,7 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
 
     fetchMessages();
 
-    // 2. Subscribe to real-time incoming messages for this order
+    // 2. Subscribe to real-time incoming messages for this order/DM
     const channel = supabase
       .channel(`chat_order_${order.id}`)
       .on(
@@ -45,7 +48,10 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
           filter: `order_id=eq.${order.id}`,
         },
         (payload) => {
-          setMessages((prev) => [...prev, payload.new]);
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === payload.new.id)) return prev;
+            return [...prev, payload.new];
+          });
           scrollToBottom();
         }
       )
@@ -62,22 +68,51 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || !currentUser) return;
 
     const textToSend = newMessage.trim();
     setNewMessage('');
+    setSendError('');
 
     const msgPayload = {
-      order_id: order.id,
+      order_id: String(order.id),
       sender_id: String(currentUser.id),
       sender_username: currentUser.username,
       content: textToSend,
     };
 
+    // 1. Insert message into database (without .select() to prevent 400 response errors)
     const { error } = await supabase.from('messages').insert([msgPayload]);
 
     if (error) {
       console.error('Failed to send message:', error);
+      setSendError(`Failed to send: ${error.message}`);
+      return;
+    }
+
+    // 2. Determine recipient for push notification
+    let recipient = null;
+    if (order.isDirectDm) {
+      const parts = String(order.id).replace('dm_', '').split('_');
+      recipient = parts.find((p) => p !== currentUser.username);
+    } else {
+      if (currentUser.username === order.donor) {
+        recipient = order.claimedByUsername || order.claimedBy;
+      } else {
+        recipient = order.donor;
+      }
+    }
+
+    // 3. Insert notification record for recipient
+    if (recipient) {
+      await supabase.from('notifications').insert([
+        {
+          user_id: recipient,
+          type: 'DIRECT_MESSAGE',
+          title: `💬 New message from @${currentUser.username}`,
+          body: textToSend,
+        },
+      ]);
     }
   };
 
@@ -92,9 +127,9 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
               <MessageSquare className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-sm leading-tight">{order.title}</h3>
+              <h3 className="font-bold text-sm leading-tight">{order.title || 'Chat'}</h3>
               <p className="text-[11px] text-emerald-100 font-medium">
-                Chatting about order #{order.id}
+                {order.isDirectDm ? 'Direct Message' : `Chatting about order #${order.id}`}
               </p>
             </div>
           </div>
@@ -105,6 +140,13 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* ERROR BANNER */}
+        {sendError && (
+          <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-600 font-medium">
+            {sendError}
+          </div>
+        )}
 
         {/* MESSAGES BODY */}
         <div className="flex-1 p-4 overflow-y-auto bg-slate-50 space-y-3">
@@ -118,11 +160,11 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
               <p>No messages yet. Send a message to start communicating!</p>
             </div>
           ) : (
-            messages.map((msg) => {
-              const isMe = String(msg.sender_id) === String(currentUser.id);
+            messages.map((msg, index) => {
+              const isMe = String(msg.sender_id) === String(currentUser?.id);
               return (
                 <div
-                  key={msg.id}
+                  key={msg.id || index}
                   className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
                 >
                   <span className="text-[10px] text-slate-400 px-1 mb-0.5 font-medium">
@@ -165,4 +207,4 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       </div>
     </div>
   );
-} 
+}
