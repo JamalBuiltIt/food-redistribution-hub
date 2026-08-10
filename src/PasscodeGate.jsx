@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { UserPlus, LogIn, KeyRound, User, AlertCircle } from 'lucide-react';
+import { UserPlus, LogIn, KeyRound, User, AlertCircle, Loader2 } from 'lucide-react';
+import { supabase } from './supabaseClient';
 
-const ACCOUNTS_KEY = 'surplus_hub_accounts';
 const CURRENT_USER_KEY = 'surplus_hub_current_user';
 
 export default function PasscodeGate({ onAuthenticated }) {
@@ -9,14 +9,12 @@ export default function PasscodeGate({ onAuthenticated }) {
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  const getAccounts = () => {
-    const saved = localStorage.getItem(ACCOUNTS_KEY);
-    return saved ? JSON.parse(saved) : [];
-  };
-
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault();
+    setError('');
+
     if (!username.trim()) {
       setError('Please enter an account name.');
       return;
@@ -26,87 +24,126 @@ export default function PasscodeGate({ onAuthenticated }) {
       return;
     }
 
-    const accounts = getAccounts();
-    if (accounts.some((acc) => acc.username.toLowerCase() === username.trim().toLowerCase())) {
-      setError('An account with this name already exists.');
+    setIsLoading(true);
+
+    try {
+      // 1. Check if username already exists in Supabase
+      const { data: existingUser } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('username', username.trim())
+        .maybeSingle();
+
+      if (existingUser) {
+        setError('An account with this name already exists.');
+        setIsLoading(false);
+        return;
+      }
+
+      // 2. Create new user profile in Supabase
+      const newUser = {
+        username: username.trim(),
+        pin: pin,
+      };
+
+      const { error: insertError } = await supabase
+        .from('profiles')
+        .insert([newUser]);
+
+      if (insertError) throw insertError;
+
+      // 3. Save session locally & authenticate
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(newUser));
+      onAuthenticated(newUser);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to create profile. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!username.trim() || !pin) {
+      setError('Please enter both account name and PIN.');
       return;
     }
 
-    const newAccount = {
-      id: `user_${Date.now()}`,
-      username: username.trim(),
-      pin: pin,
-      createdAt: new Date().toISOString(),
-    };
+    setIsLoading(true);
 
-    accounts.push(newAccount);
-    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(newAccount));
-    onAuthenticated(newAccount);
-  };
+    try {
+      // Fetch user matching username and PIN from Supabase
+      const { data: user, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('username', username.trim())
+        .eq('pin', pin)
+        .maybeSingle();
 
-  const handleLogin = (e) => {
-    e.preventDefault();
-    const accounts = getAccounts();
-    const account = accounts.find(
-      (acc) => acc.username.toLowerCase() === username.trim().toLowerCase() && acc.pin === pin
-    );
+      if (fetchError || !user) {
+        setError('Invalid account name or PIN.');
+        setIsLoading(false);
+        return;
+      }
 
-    if (account) {
-      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(account));
-      onAuthenticated(account);
-    } else {
-      setError('Invalid account name or PIN.');
+      localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
+      onAuthenticated(user);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to sign in. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-8 border border-slate-100">
-        <div className="flex flex-col items-center text-center mb-6">
-          <div className="p-4 bg-emerald-50 rounded-full text-emerald-600 mb-3">
+    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-xl border border-slate-200 max-w-md w-full p-8">
+        <div className="text-center mb-8">
+          <div className="inline-flex p-3 bg-emerald-50 rounded-2xl text-emerald-600 mb-3">
             {isRegistering ? <UserPlus className="w-8 h-8" /> : <LogIn className="w-8 h-8" />}
           </div>
           <h2 className="text-2xl font-bold text-slate-800">
-            {isRegistering ? 'Create Profile' : 'Hub Sign In'}
+            {isRegistering ? 'Create Profile' : 'Welcome Back'}
           </h2>
           <p className="text-sm text-slate-500 mt-1">
             {isRegistering
-              ? 'Create a quick profile to post & manage your pickups'
-              : 'Enter your profile details & 5+ digit PIN'}
+              ? 'Enter a username and PIN to create your account'
+              : 'Enter your account details to continue'}
           </p>
         </div>
 
         <form onSubmit={isRegistering ? handleRegister : handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">
-              Account / Org Name
+            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+              Account Name
             </label>
             <div className="relative">
-              <User className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <User className="w-5 h-5 text-slate-400 absolute left-3 top-3.5" />
               <input
                 type="text"
-                required
                 value={username}
                 onChange={(e) => {
                   setUsername(e.target.value);
                   setError('');
                 }}
-                placeholder="e.g., Downtown Bakery"
-                className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                placeholder="e.g. JohnDoe"
+                className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">
-              Account PIN (5+ Digits)
+            <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+              {isRegistering ? 'Create Security PIN (5+ digits)' : 'Security PIN'}
             </label>
             <div className="relative">
-              <KeyRound className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <KeyRound className="w-5 h-5 text-slate-400 absolute left-3 top-3.5" />
               <input
                 type="password"
-                required
                 value={pin}
                 onChange={(e) => {
                   setPin(e.target.value);
@@ -128,9 +165,16 @@ export default function PasscodeGate({ onAuthenticated }) {
 
           <button
             type="submit"
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl transition-colors shadow-sm"
+            disabled={isLoading}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
           >
-            {isRegistering ? 'Create Profile & Enter' : 'Sign In'}
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : isRegistering ? (
+              'Create Profile & Enter'
+            ) : (
+              'Sign In'
+            )}
           </button>
         </form>
 
@@ -142,7 +186,7 @@ export default function PasscodeGate({ onAuthenticated }) {
             }}
             className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 transition-colors"
           >
-            {isRegistering ? 'Already have a profile? Sign In' : "Don't have an account? Create one"}
+            {isRegistering ? 'Already have a profile? Sign In' : "Don't have a profile? Register"}
           </button>
         </div>
       </div>

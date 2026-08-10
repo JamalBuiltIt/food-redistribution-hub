@@ -21,3 +21,23 @@
 .leaflet-routing-icon {
   filter: hue-rotate(90deg); /* Colorizes turn arrows to match theme */
 }
+
+/* Place this in your global CSS file (e.g., index.css) */
+button, 
+a, 
+[role="button"], 
+input[type="button"], 
+input[type="submit"], 
+input[type="reset"], 
+summary, 
+label[for],
+select,
+.leaflet-interactive {
+  cursor: pointer !important;
+}
+
+/* Ensure disabled items revert properly */
+button:disabled, 
+input:disabled {
+  cursor: not-allowed !important;
+}

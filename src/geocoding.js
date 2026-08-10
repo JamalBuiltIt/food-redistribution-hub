@@ -1,30 +1,43 @@
-/**
- * Converts address inputs into exact lat/lng coordinates using free OSM Nominatim search.
- */
 export async function geocodeStructuredAddress({ street, city, state, zip }) {
-  const fullAddress = `${street ? street + ', ' : ''}${city}, ${state} ${zip}`.trim();
-
   try {
-    // 1. Try free-form query search first (far better for business names and precise street numbers)
-    const searchUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-      fullAddress
-    )}&limit=1&addressdetails=1`;
+    // 1. First attempt: Freeform query string (Most reliable with OpenStreetMap)
+    const query = [street, city, state, zip].filter(Boolean).join(', ');
+    
+    let response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+      {
+        headers: {
+          'User-Agent': 'SurplusShareApp/1.0 (contact@surplusshare.com)', // Required by Nominatim
+        },
+      }
+    );
 
-    const response = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'FoodSurplusRedistributionHub/1.0',
-      },
-    });
-
-    if (!response.ok) throw new Error('Geocoding service unavailable');
-
-    const data = await response.json();
+    let data = await response.json();
 
     if (data && data.length > 0) {
       return {
         lat: parseFloat(data[0].lat),
         lng: parseFloat(data[0].lon),
-        formattedAddress: fullAddress,
+      };
+    }
+
+    // 2. Second attempt: Fallback to City + State + ZIP if exact street isn't found
+    const fallbackQuery = [city, state, zip].filter(Boolean).join(', ');
+    response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackQuery)}&limit=1`,
+      {
+        headers: {
+          'User-Agent': 'SurplusShareApp/1.0 (contact@surplusshare.com)',
+        },
+      }
+    );
+
+    data = await response.json();
+
+    if (data && data.length > 0) {
+      return {
+        lat: parseFloat(data[0].lat),
+        lng: parseFloat(data[0].lon),
       };
     }
 
