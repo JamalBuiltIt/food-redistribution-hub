@@ -20,6 +20,8 @@ import {
   X,
   MessageSquare,
   Heart,
+  Bell,
+  Users,
 } from 'lucide-react';
 
 import PasscodeGate from './PasscodeGate';
@@ -28,6 +30,7 @@ import LiveRoutingMap from './LiveRoutingMap';
 import PostChefPlateModal from './PostChefPlateModal';
 import OrderChatModal from './OrderChatModal';
 import UserProfileModal from './UserProfileModal';
+import NotificationsModal from './NotificationsModal';
 import { geocodeStructuredAddress } from './geocoding';
 import { supabase } from './supabaseClient';
 import { requestPushPermission, sendBrowserPushNotification } from './notifications';
@@ -141,46 +144,19 @@ function LiveCountdown({ expiresAt }) {
 }
 
 export default function App() {
+  // ==========================================
+  // 1. ALL STATE DECLARATIONS AT THE TOP
+  // ==========================================
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem(CURRENT_USER_KEY);
     return saved ? JSON.parse(saved) : null;
   });
 
   const [userProfiles, setUserProfiles] = useState({});
-  const [activeToast, setActiveToast] = useState(null); // Floating pop-up notification state
-
-  useEffect(() => {
-    const syncUserProfile = async () => {
-      if (!currentUser?.username) return;
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('username', currentUser.username)
-        .maybeSingle();
-
-      if (profile) {
-        const mergedUser = {
-          ...currentUser,
-          ...profile,
-        };
-        setCurrentUser(mergedUser);
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(mergedUser));
-      }
-    };
-
-    syncUserProfile();
-  }, [currentUser?.username]);
-
-  const handleProfileUpdated = (updatedFields) => {
-    const updatedUser = {
-      ...currentUser,
-      ...updatedFields,
-      avatar_url: updatedFields.avatar_url || currentUser.avatar_url,
-      display_name: updatedFields.display_name || currentUser.display_name,
-    };
-    setCurrentUser(updatedUser);
-    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updatedUser));
-  };
+  const [activeToast, setActiveToast] = useState(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const [userSearchResults, setUserSearchResults] = useState([]); 
 
   const [appMode, setAppMode] = useState('surplus'); // 'surplus' | 'chef'
   const [items, setItems] = useState([]);
@@ -203,6 +179,7 @@ export default function App() {
   const [previewCoords, setPreviewCoords] = useState(null);
   const [isLocatingUser, setIsLocatingUser] = useState(false);
 
+  // SEARCH STATES
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [hideClaimed, setHideClaimed] = useState(false);
@@ -219,6 +196,110 @@ export default function App() {
     instructions: '',
     phone: '',
   });
+
+  // ==========================================
+  // 2. ALL EFFECTS NOW SAFELY BELOW STATE
+  // ==========================================
+  useEffect(() => {
+    const syncUserProfile = async () => {
+      if (!currentUser?.username) return;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('username', currentUser.username)
+        .maybeSingle();
+
+      if (profile) {
+        const mergedUser = {
+          ...currentUser,
+          ...profile,
+        };
+        setCurrentUser(mergedUser);
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(mergedUser));
+      }
+    };
+
+    syncUserProfile();
+  }, [currentUser?.username]);
+
+  // Dynamic User Search Effect
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setUserSearchResults([]);
+      return;
+    }
+
+    const fetchSearchedUsers = async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('username', `%${searchQuery}%`) // Search by username
+        .limit(4);
+
+      if (!error && data) {
+        setUserSearchResults(data.filter((u) => u.username !== currentUser?.username));
+      }
+    };
+
+    const delayDebounceFn = setTimeout(() => {
+      fetchSearchedUsers();
+    }, 300);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, currentUser?.username]);
+
+  // Fetch initial unread count & listen for new notifications
+  useEffect(() => {
+    if (!currentUser?.username) return;
+
+    const fetchUnreadCount = async () => {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', currentUser.username)
+        .eq('is_read', false);
+
+      if (!error && count !== null) {
+        setUnreadCount(count);
+      }
+    };
+
+    fetchUnreadCount();
+
+    const notifChannel = supabase
+      .channel(`notifications_${currentUser.username.replace(/[^a-zA-Z0-9]/g, '')}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${currentUser.username}`,
+        },
+        (payload) => {
+          const notif = payload.new;
+          sendBrowserPushNotification(notif.title, notif.body);
+          setActiveToast(notif);
+          setUnreadCount((prev) => prev + 1);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(notifChannel);
+    };
+  }, [currentUser?.username]);
+
+  const handleProfileUpdated = (updatedFields) => {
+    const updatedUser = {
+      ...currentUser,
+      ...updatedFields,
+      avatar_url: updatedFields.avatar_url || currentUser.avatar_url,
+      display_name: updatedFields.display_name || currentUser.display_name,
+    };
+    setCurrentUser(updatedUser);
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updatedUser));
+  };
 
   const fetchProfilesForUsernames = async (usernames) => {
     if (!usernames || usernames.length === 0) return;
@@ -298,33 +379,6 @@ export default function App() {
     }
   };
 
-  // Real-time notification subscriber & in-app popup trigger
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const notifChannel = supabase
-      .channel(`notifications_${currentUser.username}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${currentUser.username}`,
-        },
-        (payload) => {
-          const notif = payload.new;
-          sendBrowserPushNotification(notif.title, notif.body);
-          setActiveToast(notif); // Triggers the on-screen pop-up banner!
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(notifChannel);
-    };
-  }, [currentUser]);
-
   useEffect(() => {
     if (!navigator.geolocation) return;
 
@@ -362,18 +416,20 @@ export default function App() {
 
     fetchItems();
 
-    const channel = supabase
+    const itemsChannel = supabase
       .channel('public:surplus_items')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'surplus_items' }, (payload) => {
-        if (payload.eventType === 'INSERT') setItems((prev) => [payload.new, ...prev]);
-        else if (payload.eventType === 'UPDATE')
-          setItems((prev) => prev.map((i) => (i.id === payload.new.id ? payload.new : i)));
-        else if (payload.eventType === 'DELETE')
-          setItems((prev) => prev.filter((i) => i.id !== payload.old.id));
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'surplus_items' },
+        () => {
+          fetchItems();
+        }
+      )
       .subscribe();
 
-    return () => supabase.removeChannel(channel);
+    return () => {
+      supabase.removeChannel(itemsChannel);
+    };
   }, []);
 
   useEffect(() => {
@@ -430,6 +486,7 @@ export default function App() {
           type: 'ITEM_CLAIMED',
           title: '📦 Item Reserved!',
           body: `${currentUser.username} reserved your item "${item.title}".`,
+          is_read: false,
         },
       ]);
 
@@ -465,19 +522,12 @@ export default function App() {
           type: 'CHEF_ORDER',
           title: '🍲 New Order!',
           body: `${currentUser.username} ordered a portion of "${plate.title}".`,
+          is_read: false,
         },
       ]);
 
       sendBrowserPushNotification('Order Placed', `Contact Chef ${plate.chef_name} for pickup.`);
       fetchChefListings();
-    }
-  };
-
-  const handleDeleteItem = async (id) => {
-    const targetId = typeof id === 'number' ? id : parseInt(id, 10);
-    const { error } = await supabase.from('surplus_items').delete().eq('id', targetId);
-    if (!error) {
-      setItems((prev) => prev.filter((item) => item.id !== id && item.id !== targetId));
     }
   };
 
@@ -559,6 +609,7 @@ export default function App() {
           type: 'NEW_POST',
           title: `✨ First Dibs from @${currentUser.username}!`,
           body: `New listing: "${formData.title}" was just posted!`,
+          is_read: false,
         }));
 
         await supabase.from('notifications').insert(notificationsToInsert);
@@ -621,7 +672,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* MODE SWITCHER */}
         <div
           className={`p-1 rounded-2xl flex items-center border transition-colors duration-300 ${
             isChefTheme ? 'bg-amber-900/80 border-amber-800' : 'bg-slate-100 border-slate-200'
@@ -653,7 +703,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* USER PROFILE & ACTIONS */}
         <div className="flex items-center gap-3">
           <button
             onClick={handleLocateUser}
@@ -666,9 +715,28 @@ export default function App() {
             <span className="hidden sm:inline">Near Me</span>
           </button>
 
+          <div className="relative">
+            <button
+              onClick={() => setShowNotificationsModal(true)}
+              className={`p-2.5 rounded-xl border transition-all hover:scale-105 relative flex items-center justify-center ${
+                isChefTheme
+                  ? 'bg-amber-900/60 border-amber-800 text-amber-200 hover:text-white'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:text-slate-900'
+              }`}
+              title="Open Notifications & Messages"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white font-black text-[10px] px-1.5 py-0.5 rounded-full shadow-md animate-pulse border-2 border-white dark:border-slate-900">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+          </div>
+
           <button
             onClick={() => setViewingProfileUser(currentUser.username)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl border transition-all hover:scale-105 ${
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-2xl border transition-all hover:scale-105 ${
               isChefTheme
                 ? 'bg-amber-900/60 border-amber-800 text-amber-100'
                 : 'bg-slate-100 border-slate-200 text-slate-800'
@@ -754,7 +822,7 @@ export default function App() {
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                 <input
                   type="text"
-                  placeholder={isChefTheme ? 'Search dishes, chefs...' : 'Search free food, address...'}
+                  placeholder={isChefTheme ? 'Search dishes, chefs...' : 'Search food, people, or address...'}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className={`w-full pl-9 pr-3 py-2 border rounded-xl text-xs outline-none transition-colors ${
@@ -790,7 +858,36 @@ export default function App() {
               </div>
             </div>
 
-            <div key={appMode} className="space-y-4 flex-1 animate-fade-in">
+            <div key={appMode} className="space-y-4 flex-1 animate-fade-in pb-10">
+              
+              {/* DYNAMIC USER SEARCH RESULTS */}
+              {searchQuery && userSearchResults.length > 0 && (
+                <div className="mb-6 pb-6 border-b border-slate-100">
+                  <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                    <Users className="w-4 h-4" /> People matching "{searchQuery}"
+                  </h3>
+                  <div className="flex flex-col gap-2">
+                    {userSearchResults.map((user) => (
+                      <button
+                        key={user.username}
+                        onClick={() => setViewingProfileUser(user.username)}
+                        className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-slate-200 hover:border-emerald-300 hover:shadow-md transition-all text-left"
+                      >
+                        <img
+                          src={user.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`}
+                          alt={user.username}
+                          className="w-10 h-10 rounded-full bg-slate-100 object-cover"
+                        />
+                        <div>
+                          <div className="text-sm font-bold text-slate-800">{user.display_name || user.username}</div>
+                          <div className="text-[11px] font-semibold text-slate-500">@{user.username}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {isChefTheme
                 ? filteredChefItems.map((plate) => {
                     const chefProf = userProfiles[plate.chef_name];
@@ -936,7 +1033,26 @@ export default function App() {
         </div>
       )}
 
-      {/* SOCIAL PROFILE MODAL (WITH INSTAGRAM-STYLE DM TRIGGER) */}
+      {/* NOTIFICATIONS MODAL */}
+      {showNotificationsModal && (
+        <NotificationsModal
+          currentUser={currentUser}
+          onClose={() => {
+            setShowNotificationsModal(false);
+            supabase
+              .from('notifications')
+              .select('*', { count: 'exact', head: true })
+              .eq('user_id', currentUser.username)
+              .eq('is_read', false)
+              .then(({ count }) => {
+                if (count !== null) setUnreadCount(count);
+              });
+          }}
+          onOpenChat={(chatOrder) => setActiveChatOrder(chatOrder)}
+        />
+      )}
+
+      {/* SOCIAL PROFILE MODAL */}
       {viewingProfileUser && (
         <UserProfileModal
           targetUsername={viewingProfileUser}
@@ -1224,19 +1340,20 @@ export default function App() {
           </div>
           <p className="text-xs text-slate-300 font-medium">{activeToast.body}</p>
 
+          {/* REPLACE FROM HERE DOWN */}
           <div className="flex justify-end gap-2 mt-1">
-            {(activeToast.type === 'DIRECT_MESSAGE' || activeToast.type === 'NEW_MESSAGE') && (
+            {(activeToast.type === 'DIRECT_MESSAGE' || activeToast.type === 'NEW_MESSAGE' || activeToast.type === 'ITEM_MESSAGE') && (
               <button
                 onClick={() => {
-                  const match = activeToast.title.match(/@([a-zA-Z0-9_-]+)/);
+                  const match = activeToast.title.match(/@(.+)$/);
                   const senderUsername = match ? match[1] : null;
 
                   if (senderUsername) {
                     setActiveChatOrder({
-                      id: `dm_${[currentUser.username, senderUsername].sort().join('_')}`,
-                      title: `Direct Message with @${senderUsername}`,
+                      id: activeToast.order_id || `dm_${[currentUser.username, senderUsername].sort().join('_')}`,
+                      title: activeToast.type === 'ITEM_MESSAGE' ? activeToast.title : `Direct Message with @${senderUsername}`,
                       donor: senderUsername,
-                      isDirectDm: true,
+                      isDirectDm: activeToast.type !== 'ITEM_MESSAGE',
                     });
                   }
                   setActiveToast(null);
@@ -1253,6 +1370,8 @@ export default function App() {
               Dismiss
             </button>
           </div>
+          {/* TO HERE */}
+
         </div>
       )}
     </div>

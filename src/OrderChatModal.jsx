@@ -1,3 +1,4 @@
+// OrderChatModal.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, X, MessageSquare, Loader2 } from 'lucide-react';
 import { supabase } from './supabaseClient';
@@ -9,7 +10,6 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
   const [sendError, setSendError] = useState('');
   const chatEndRef = useRef(null);
 
-  // Auto-scroll to latest message
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -17,54 +17,66 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
   useEffect(() => {
     if (!order?.id) return;
 
-    // 1. Fetch initial message history
+    const orderIdStr = String(order.id);
+
     const fetchMessages = async () => {
       const { data, error } = await supabase
         .from('messages')
         .select('*')
-        .eq('order_id', String(order.id))
+        .eq('order_id', orderIdStr)
         .order('created_at', { ascending: true });
 
       if (error) {
         console.error('Error fetching messages:', error);
       } else if (data) {
-        setMessages(data);
+        // Prevent aggressive re-rendering if messages are the same
+        setMessages((prev) => (prev.length !== data.length ? data : prev));
       }
       setIsLoading(false);
-      scrollToBottom();
     };
 
-    fetchMessages();
+    // 1. Initial fetch
+    fetchMessages().then(scrollToBottom);
 
-    // 2. Subscribe to real-time incoming messages for this order/DM
+    // 2. FAILSAFE POLLING ENGINE (Triggers every 3 seconds)
+    // Guarantee messages arrive even if Realtime WebSockets are blocked by firewall
+    const pollingInterval = setInterval(() => {
+      fetchMessages();
+    }, 3000);
+
+    // 3. Supabase Realtime Listener (Instant Updates)
     const channel = supabase
-      .channel(`chat_order_${order.id}`)
+      .channel(`chat_order_${orderIdStr.replace(/[^a-zA-Z0-9]/g, '')}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: `order_id=eq.${order.id}`,
         },
         (payload) => {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === payload.new.id)) return prev;
-            return [...prev, payload.new];
-          });
-          scrollToBottom();
+          if (String(payload.new.order_id) === orderIdStr) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === payload.new.id)) return prev;
+              const newChat = [...prev, payload.new];
+              // Small delay to ensure render happens before scrolling
+              setTimeout(scrollToBottom, 50);
+              return newChat;
+            });
+          }
         }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(pollingInterval); // Clean up the failsafe loop
+      supabase.removeChannel(channel); // Clean up the websocket
     };
   }, [order?.id]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages.length]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -81,8 +93,8 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       content: textToSend,
     };
 
-    // 1. Insert message into database (without .select() to prevent 400 response errors)
-    const { error } = await supabase.from('messages').insert([msgPayload]);
+    // Insert to DB
+    const { data, error } = await supabase.from('messages').insert([msgPayload]).select();
 
     if (error) {
       console.error('Failed to send message:', error);
@@ -90,7 +102,16 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       return;
     }
 
-    // 2. Determine recipient for push notification
+    // Optimistically push UI update instantly
+    if (data && data[0]) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === data[0].id)) return prev;
+        return [...prev, data[0]];
+      });
+      scrollToBottom();
+    }
+
+    // Determine the exact recipient logic for this specific thread
     let recipient = null;
     if (order.isDirectDm) {
       const parts = String(order.id).replace('dm_', '').split('_');
@@ -103,14 +124,17 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       }
     }
 
-    // 3. Insert notification record for recipient
+    // Ping the recipient with a Push/Toast notification
     if (recipient) {
       await supabase.from('notifications').insert([
         {
           user_id: recipient,
-          type: 'DIRECT_MESSAGE',
-          title: `💬 New message from @${currentUser.username}`,
+          type: order.isDirectDm ? 'DIRECT_MESSAGE' : 'ITEM_MESSAGE',
+          title: order.isDirectDm
+            ? `💬 New message from @${currentUser.username}`
+            : `💬 Message about "${order.title || 'Item'}"`,
           body: textToSend,
+          is_read: false,
         },
       ]);
     }
@@ -120,7 +144,6 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[99999]">
       <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl flex flex-col h-[550px] border border-slate-100 overflow-hidden">
         
-        {/* CHAT HEADER */}
         <div className="p-4 bg-emerald-600 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-emerald-700/60 rounded-xl">
@@ -141,14 +164,12 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
           </button>
         </div>
 
-        {/* ERROR BANNER */}
         {sendError && (
           <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-600 font-medium">
             {sendError}
           </div>
         )}
 
-        {/* MESSAGES BODY */}
         <div className="flex-1 p-4 overflow-y-auto bg-slate-50 space-y-3">
           {isLoading ? (
             <div className="flex items-center justify-center h-full text-slate-400 gap-2 text-xs">
@@ -186,7 +207,6 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
           <div ref={chatEndRef} />
         </div>
 
-        {/* INPUT FORM */}
         <form onSubmit={handleSendMessage} className="p-3 bg-white border-t border-slate-100 flex gap-2 shrink-0">
           <input
             type="text"
