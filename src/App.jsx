@@ -197,6 +197,10 @@ export default function App() {
     phone: '',
   });
 
+  // NEW: State for image file upload selection
+  const [imageFile, setImageFile] = useState(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+
   // ==========================================
   // 2. ALL EFFECTS NOW SAFELY BELOW STATE
   // ==========================================
@@ -520,7 +524,7 @@ export default function App() {
         {
           user_id: plate.chef_name,
           type: 'CHEF_ORDER',
-          title: '🍲 New Order!',
+          title: '🛒 New Order!',
           body: `${currentUser.username} ordered a portion of "${plate.title}".`,
           is_read: false,
         },
@@ -530,6 +534,34 @@ export default function App() {
       fetchChefListings();
     }
   };
+
+  // 👉 PASTE THE DELETE FUNCTIONS HERE:
+  const handleDeleteSurplus = async (itemId) => {
+    if (!window.confirm('Are you sure you want to delete this listing?')) return;
+    const targetId = typeof itemId === 'number' ? itemId : parseInt(itemId, 10);
+    const { error } = await supabase.from('surplus_items').delete().eq('id', targetId);
+
+    if (!error) {
+      setItems((prev) => prev.filter((i) => i.id !== targetId));
+      sendBrowserPushNotification('Deleted', 'Listing removed successfully.');
+    } else {
+      alert(`Failed to delete: ${error.message}`);
+    }
+  };
+
+  const handleDeleteChefPlate = async (plateId) => {
+    if (!window.confirm('Are you sure you want to delete this kitchen dish?')) return;
+    const targetId = typeof plateId === 'number' ? plateId : parseInt(plateId, 10);
+    const { error } = await supabase.from('home_chef_listings').delete().eq('id', targetId);
+
+    if (!error) {
+      setChefListings((prev) => prev.filter((p) => p.id !== targetId));
+      sendBrowserPushNotification('Deleted', 'Dish removed successfully.');
+    } else {
+      alert(`Failed to delete: ${error.message}`);
+    }
+  };
+
 
   const handleLocateUser = () => {
     if (!navigator.geolocation) return;
@@ -571,6 +603,31 @@ export default function App() {
   const handlePublishListing = async () => {
     if (!previewCoords) return;
 
+    setIsUploadingImage(true);
+    let finalImageUrl = formData.imageUrl;
+
+    // Upload selected image file to Supabase Storage if present
+    if (imageFile) {
+      const fileExt = imageFile.name.split('.').pop();
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from('surplus-images')
+        .upload(fileName, imageFile);
+
+      if (uploadError) {
+        console.error('Storage upload error:', uploadError.message);
+        alert(`Image upload failed: ${uploadError.message}`);
+      } else {
+        const { data: publicUrlData } = supabase.storage
+          .from('surplus-images')
+          .getPublicUrl(fileName);
+        if (publicUrlData?.publicUrl) {
+          finalImageUrl = publicUrlData.publicUrl;
+        }
+      }
+    }
+    setIsUploadingImage(false);
+
     const fullAddress = `${formData.street ? formData.street + ', ' : ''}${formData.city}, ${
       formData.state
     } ${formData.zip}`;
@@ -583,7 +640,7 @@ export default function App() {
       address: fullAddress,
       lat: previewCoords.lat,
       lng: previewCoords.lng,
-      imageUrl: formData.imageUrl,
+      imageUrl: finalImageUrl,
       instructions: formData.instructions,
       donorPhone: formData.phone,
       expiresAt: new Date(Date.now() + 1000 * 60 * parseInt(formData.minutesToExpire)).toISOString(),
@@ -597,6 +654,19 @@ export default function App() {
       setMapCenter({ lat: previewCoords.lat, lng: previewCoords.lng });
       setShowSurplusModal(false);
       setPreviewCoords(null);
+      setImageFile(null);
+      setFormData({
+        title: '',
+        category: 'Bakery',
+        street: '',
+        city: '',
+        state: '',
+        zip: '',
+        minutesToExpire: '60',
+        imageUrl: '',
+        instructions: '',
+        phone: '',
+      });
 
       const { data: subscribers } = await supabase
         .from('donor_subscriptions')
@@ -614,6 +684,9 @@ export default function App() {
 
         await supabase.from('notifications').insert(notificationsToInsert);
       }
+    } else {
+      console.error('Database insert error:', error.message);
+      alert(`Failed to publish listing: ${error.message}`);
     }
   };
 
@@ -900,12 +973,16 @@ export default function App() {
                         className="p-4 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-sm hover:shadow-md transition-shadow"
                       >
                         {plate.image_url && (
+                        <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
                           <img
                             src={plate.image_url}
                             alt={plate.title}
-                            className="w-full h-36 object-cover rounded-xl mb-3"
+                            className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
                           />
-                        )}
+                          {/* White fade overlay that clears on hover */}
+                          <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
+                        </div>
+                      )}
                         <div className="flex justify-between items-start">
                           <button
                             onClick={() => setViewingProfileUser(plate.chef_name)}
@@ -931,13 +1008,24 @@ export default function App() {
                           <span className="font-bold text-amber-900 flex items-center gap-1">
                             <ShoppingBag className="w-3.5 h-3.5" /> {plate.available_portions} left
                           </span>
-                          <button
-                            onClick={() => handleOrderChefPlate(plate)}
-                            disabled={plate.available_portions <= 0}
-                            className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:bg-slate-300 transition-colors"
-                          >
-                            {plate.available_portions > 0 ? 'Order Plate' : 'Sold Out'}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {plate.chef_name === currentUser.username && (
+                              <button
+                                onClick={() => handleDeleteChefPlate(plate.id)}
+                                className="p-2 bg-amber-100 hover:bg-rose-100 hover:text-rose-600 text-amber-900 rounded-xl transition-colors border border-amber-200"
+                                title="Delete Dish"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleOrderChefPlate(plate)}
+                              disabled={plate.available_portions <= 0}
+                              className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:bg-slate-300 transition-colors"
+                            >
+                              {plate.available_portions > 0 ? 'Order Plate' : 'Sold Out'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -953,12 +1041,16 @@ export default function App() {
                         className="p-4 rounded-2xl border bg-white border-slate-200 shadow-sm hover:shadow-md transition-shadow"
                       >
                         {item.imageUrl && (
-                          <img
-                            src={item.imageUrl}
-                            alt={item.title}
-                            className="w-full h-32 object-cover rounded-xl mb-3"
-                          />
-                        )}
+                      <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
+                        <img
+                          src={item.imageUrl}
+                          alt={item.title}
+                          className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
+                        />
+                        {/* White fade overlay that clears on hover */}
+                        <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
+                      </div>
+                    )}
                         <div className="flex justify-between items-start">
                           <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
                             {item.category}
@@ -987,6 +1079,15 @@ export default function App() {
                           <LiveCountdown expiresAt={item.claimExpiresAt || item.expiresAt || item.expires_at} />
 
                           <div className="flex items-center gap-2">
+                            {(item.donor === currentUser.username || item.ownerId === currentUser.id) && (
+                              <button
+                                onClick={() => handleDeleteSurplus(item.id)}
+                                className="p-2 bg-slate-100 hover:bg-rose-100 hover:text-rose-600 text-slate-600 rounded-xl transition-colors border border-slate-200"
+                                title="Delete Listing"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             {item.isClaimed && (
                               <button
                                 onClick={() => setActiveChatOrder(item)}
@@ -1091,6 +1192,7 @@ export default function App() {
                 onClick={() => {
                   setShowSurplusModal(false);
                   setPreviewCoords(null);
+                  setImageFile(null);
                 }}
                 className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl"
               >
@@ -1199,14 +1301,13 @@ export default function App() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                  Photo URL (Optional)
+                  Item Photo (Optional)
                 </label>
                 <input
-                  type="url"
-                  placeholder="https://..."
-                  value={formData.imageUrl}
-                  onChange={(e) => setFormData({ ...formData, imageUrl: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-slate-50"
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files[0])}
+                  className="w-full px-3 py-1.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-slate-50 file:mr-4 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 cursor-pointer"
                 />
               </div>
 
@@ -1233,7 +1334,10 @@ export default function App() {
                 <div className="flex justify-end gap-3 mt-6">
                   <button
                     type="button"
-                    onClick={() => setShowSurplusModal(false)}
+                    onClick={() => {
+                      setShowSurplusModal(false);
+                      setImageFile(null);
+                    }}
                     className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold"
                   >
                     Cancel
@@ -1294,9 +1398,16 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handlePublishListing}
-                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md"
+                    disabled={isUploadingImage}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md rounded-xl disabled:opacity-50"
                   >
-                    Confirm & Publish
+                    {isUploadingImage ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" /> Uploading Photo...
+                      </>
+                    ) : (
+                      'Confirm & Publish'
+                    )}
                   </button>
                 </div>
               </div>
@@ -1340,7 +1451,6 @@ export default function App() {
           </div>
           <p className="text-xs text-slate-300 font-medium">{activeToast.body}</p>
 
-          {/* REPLACE FROM HERE DOWN */}
           <div className="flex justify-end gap-2 mt-1">
             {(activeToast.type === 'DIRECT_MESSAGE' || activeToast.type === 'NEW_MESSAGE' || activeToast.type === 'ITEM_MESSAGE') && (
               <button
@@ -1370,8 +1480,6 @@ export default function App() {
               Dismiss
             </button>
           </div>
-          {/* TO HERE */}
-
         </div>
       )}
     </div>

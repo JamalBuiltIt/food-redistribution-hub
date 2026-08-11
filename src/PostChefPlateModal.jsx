@@ -47,6 +47,40 @@ export default function PostChefPlateModal({ currentUser, onClose, onPublished }
   const [geocodeError, setGeocodeError] = useState('');
   const [previewCoords, setPreviewCoords] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const handleImageUpload = async (e) => {
+    try {
+      setUploading(true);
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random().toString(36).substring(2)}-${Date.now()}.${fileExt}`;
+      const filePath = `uploads/${fileName}`;
+
+      // 1. Upload to Supabase Storage bucket 'surplus-images'
+      const { error: uploadError } = await supabase.storage
+        .from('surplus-images')
+        .upload(filePath, file);
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      // 2. Retrieve Public URL
+      const { data } = supabase.storage
+        .from('surplus-images')
+        .getPublicUrl(filePath);
+
+      setFormData((prev) => ({ ...prev, imageUrl: data.publicUrl }));
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      alert('Error uploading image: ' + error.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleVerifyLocation = async (e) => {
     e.preventDefault();
@@ -296,17 +330,37 @@ export default function PostChefPlateModal({ currentUser, onClose, onPublished }
             </div>
           </div>
 
+          {/* Native Image Upload Field */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase mb-1 flex items-center gap-1">
-              <Camera className="w-3.5 h-3.5 text-slate-400" /> Photo URL (Optional)
+              <Camera className="w-3.5 h-3.5 text-slate-400" /> Dish Photo
             </label>
-            <input
-              type="url"
-              placeholder="https://images.unsplash.com/photo-..."
-              value={formData.imageUrl}
-              onChange={(e) => setFormData({ ...formData, imageUrl: e.target.value })}
-              className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-amber-500 outline-none text-sm bg-amber-50/20"
-            />
+            <div className="flex items-center gap-3">
+              <label className="flex-1 flex items-center justify-center px-4 py-3 border-2 border-dashed border-amber-300 hover:border-amber-500 rounded-xl cursor-pointer bg-amber-50/20 hover:bg-amber-50/40 transition-all text-xs font-semibold text-slate-600">
+                {uploading ? (
+                  <span className="flex items-center gap-2 text-amber-700">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Uploading image...
+                  </span>
+                ) : formData.imageUrl ? (
+                  <span className="text-emerald-700 font-bold">✓ Image Uploaded Successfully</span>
+                ) : (
+                  <span>Click to browse or drop a photo file</span>
+                )}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  disabled={uploading}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {formData.imageUrl && (
+              <div className="mt-2 relative w-20 h-20 rounded-xl overflow-hidden border border-amber-200 shadow-sm">
+                <img src={formData.imageUrl} alt="Upload Preview" className="w-full h-full object-cover" />
+              </div>
+            )}
           </div>
 
           <div>
