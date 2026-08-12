@@ -466,7 +466,6 @@ export default function App() {
   const handleClaim = async (item) => {
     try {
       if (!item || !item.id) return;
-      const targetId = typeof item.id === 'number' ? item.id : parseInt(item.id, 10);
 
       const allowedMinutes = getClaimWindowMinutes(userLocation, { lat: item.lat, lng: item.lng });
       const claimExpiresAt = new Date(Date.now() + allowedMinutes * 60 * 1000).toISOString();
@@ -480,7 +479,7 @@ export default function App() {
           status: 'claimed',
           claimExpiresAt,
         })
-        .eq('id', targetId);
+        .eq('id', item.id);
 
       if (error) return;
 
@@ -496,7 +495,6 @@ export default function App() {
 
       const updatedItem = {
         ...item,
-        id: targetId,
         isClaimed: true,
         claimedBy: currentUser.id,
         claimExpiresAt,
@@ -548,11 +546,11 @@ export default function App() {
 
   const handleDeleteSurplus = async (itemId) => {
     if (!window.confirm('Are you sure you want to delete this listing?')) return;
-    const targetId = typeof itemId === 'number' ? itemId : parseInt(itemId, 10);
-    const { error } = await supabase.from('surplus_items').delete().eq('id', targetId);
+    
+    const { error } = await supabase.from('surplus_items').delete().eq('id', itemId);
 
     if (!error) {
-      setItems((prev) => prev.filter((i) => i.id !== targetId));
+      setItems((prev) => prev.filter((i) => i.id !== itemId));
       sendBrowserPushNotification('Deleted', 'Listing removed successfully.');
     } else {
       alert(`Failed to delete: ${error.message}`);
@@ -561,11 +559,11 @@ export default function App() {
 
   const handleDeleteChefPlate = async (plateId) => {
     if (!window.confirm('Are you sure you want to delete this kitchen dish?')) return;
-    const targetId = typeof plateId === 'number' ? plateId : parseInt(plateId, 10);
-    const { error } = await supabase.from('home_chef_listings').delete().eq('id', targetId);
+    
+    const { error } = await supabase.from('home_chef_listings').delete().eq('id', plateId);
 
     if (!error) {
-      setChefListings((prev) => prev.filter((p) => p.id !== targetId));
+      setChefListings((prev) => prev.filter((p) => p.id !== plateId));
       sendBrowserPushNotification('Deleted', 'Dish removed successfully.');
     } else {
       alert(`Failed to delete: ${error.message}`);
