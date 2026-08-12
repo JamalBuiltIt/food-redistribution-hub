@@ -439,12 +439,21 @@ export default function App() {
   useEffect(() => {
     fetchChefListings();
 
+    // Add this inside your main useEffect in App.jsx
     const chefChannel = supabase
       .channel('public:home_chef_listings')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'home_chef_listings' }, () =>
-        fetchChefListings()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'home_chef_listings' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setChefListings((prev) => [payload.new, ...prev]);
+        } else if (payload.eventType === 'UPDATE') {
+          setChefListings((prev) => prev.map(item => item.id === payload.new.id ? payload.new : item));
+        } else if (payload.eventType === 'DELETE') {
+          setChefListings((prev) => prev.filter(item => item.id !== payload.old.id));
+        }
+      })
       .subscribe();
+
+    // Make sure to add supabase.removeChannel(chefChannel) to your cleanup return function!
 
     return () => supabase.removeChannel(chefChannel);
   }, []);
@@ -1514,13 +1523,15 @@ export default function App() {
             {(activeToast.type === 'DIRECT_MESSAGE' || activeToast.type === 'NEW_MESSAGE' || activeToast.type === 'ITEM_MESSAGE') && (
               <button
                 onClick={() => {
-                  const match = activeToast.title.match(/@(.+)$/);
-                  const senderUsername = match ? match[1] : null;
+                  const senderUsername = 
+                    activeToast.sender || 
+                    (activeToast.title && activeToast.title.match(/@([\w_.-]+)/)?.[1]) || 
+                    (activeToast.body && activeToast.body.split(' ')[0]);
 
                   if (senderUsername) {
                     setActiveChatOrder({
                       id: activeToast.order_id || `dm_${[currentUser.username, senderUsername].sort().join('_')}`,
-                      title: activeToast.type === 'ITEM_MESSAGE' ? activeToast.title : `Direct Message with @${senderUsername}`,
+                      title: activeToast.type === 'ITEM_MESSAGE' ? (activeToast.title || 'Item Chat') : `Direct Message with @${senderUsername}`,
                       donor: senderUsername,
                       isDirectDm: activeToast.type !== 'ITEM_MESSAGE',
                     });
