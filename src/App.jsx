@@ -197,12 +197,12 @@ export default function App() {
     phone: '',
   });
 
-  // NEW: State for image file upload selection
+  // Image file upload state
   const [imageFile, setImageFile] = useState(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
   // ==========================================
-  // 2. ALL EFFECTS NOW SAFELY BELOW STATE
+  // 2. ALL EFFECTS SAFELY BELOW STATE
   // ==========================================
   useEffect(() => {
     const syncUserProfile = async () => {
@@ -237,7 +237,7 @@ export default function App() {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .ilike('username', `%${searchQuery}%`) // Search by username
+        .ilike('username', `%${searchQuery}%`) 
         .limit(4);
 
       if (!error && data) {
@@ -530,12 +530,22 @@ export default function App() {
         },
       ]);
 
-      sendBrowserPushNotification('Order Placed', `Contact Chef ${plate.chef_name} for pickup.`);
+      sendBrowserPushNotification('Order Placed', `Directions set to Chef ${plate.chef_name}'s kitchen.`);
       fetchChefListings();
+
+      // Set plate as active tracking order with chef as donor for chat
+      const orderedPlate = {
+        ...plate,
+        isClaimed: true,
+        claimedBy: currentUser.id,
+        donor: plate.chef_name,
+      };
+
+      setActiveTrackingOrder(orderedPlate);
+      setActiveView('tracking');
     }
   };
 
-  // 👉 PASTE THE DELETE FUNCTIONS HERE:
   const handleDeleteSurplus = async (itemId) => {
     if (!window.confirm('Are you sure you want to delete this listing?')) return;
     const targetId = typeof itemId === 'number' ? itemId : parseInt(itemId, 10);
@@ -561,7 +571,6 @@ export default function App() {
       alert(`Failed to delete: ${error.message}`);
     }
   };
-
 
   const handleLocateUser = () => {
     if (!navigator.geolocation) return;
@@ -606,7 +615,6 @@ export default function App() {
     setIsUploadingImage(true);
     let finalImageUrl = formData.imageUrl;
 
-    // Upload selected image file to Supabase Storage if present
     if (imageFile) {
       const fileExt = imageFile.name.split('.').pop();
       const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
@@ -848,6 +856,7 @@ export default function App() {
       {activeView === 'dashboard' && (
         <UserDashboard
           currentUser={currentUser}
+          appMode={appMode} // 👈 Added
           onSelectOrderForTracking={(order) => {
             setActiveTrackingOrder(order);
             setActiveView('tracking');
@@ -865,9 +874,11 @@ export default function App() {
             <div className="flex gap-2">
               <button
                 onClick={() => setActiveChatOrder(activeTrackingOrder)}
-                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-xl transition-colors"
+                className={`flex items-center gap-1.5 px-4 py-2 text-white font-semibold text-xs rounded-xl transition-colors ${
+                  isChefTheme ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                <MessageSquare className="w-4 h-4" /> Chat with Donor
+                <MessageSquare className="w-4 h-4" /> {isChefTheme ? 'Chat with Chef' : 'Chat with Donor'}
               </button>
               <button
                 onClick={() => setActiveView('explore')}
@@ -944,7 +955,9 @@ export default function App() {
                       <button
                         key={user.username}
                         onClick={() => setViewingProfileUser(user.username)}
-                        className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-slate-200 hover:border-emerald-300 hover:shadow-md transition-all text-left"
+                        className={`flex items-center gap-3 p-3 bg-white rounded-2xl border border-slate-200 transition-all text-left ${
+                          isChefTheme ? 'hover:border-amber-300 hover:shadow-md' : 'hover:border-emerald-300 hover:shadow-md'
+                        }`}
                       >
                         <img
                           src={user.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`}
@@ -973,16 +986,15 @@ export default function App() {
                         className="p-4 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-sm hover:shadow-md transition-shadow"
                       >
                         {plate.image_url && (
-                        <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
-                          <img
-                            src={plate.image_url}
-                            alt={plate.title}
-                            className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
-                          />
-                          {/* White fade overlay that clears on hover */}
-                          <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
-                        </div>
-                      )}
+                          <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
+                            <img
+                              src={plate.image_url}
+                              alt={plate.title}
+                              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
+                          </div>
+                        )}
                         <div className="flex justify-between items-start">
                           <button
                             onClick={() => setViewingProfileUser(plate.chef_name)}
@@ -1019,6 +1031,12 @@ export default function App() {
                               </button>
                             )}
                             <button
+                              onClick={() => setActiveChatOrder({ ...plate, donor: plate.chef_name })}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold text-xs rounded-xl transition-colors border border-amber-200"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" /> Chat
+                            </button>
+                            <button
                               onClick={() => handleOrderChefPlate(plate)}
                               disabled={plate.available_portions <= 0}
                               className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:bg-slate-300 transition-colors"
@@ -1041,16 +1059,15 @@ export default function App() {
                         className="p-4 rounded-2xl border bg-white border-slate-200 shadow-sm hover:shadow-md transition-shadow"
                       >
                         {item.imageUrl && (
-                      <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
-                        <img
-                          src={item.imageUrl}
-                          alt={item.title}
-                          className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
-                        />
-                        {/* White fade overlay that clears on hover */}
-                        <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
-                      </div>
-                    )}
+                          <div className="relative w-full h-56 overflow-hidden rounded-xl mb-3 bg-slate-100 group">
+                            <img
+                              src={item.imageUrl}
+                              alt={item.title}
+                              className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-110"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/30 to-transparent opacity-75 group-hover:opacity-0 transition-opacity duration-300 pointer-events-none" />
+                          </div>
+                        )}
                         <div className="flex justify-between items-start">
                           <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100">
                             {item.category}
@@ -1112,23 +1129,61 @@ export default function App() {
           </div>
 
           {/* MAP CONTAINER */}
-          <div className="md:col-span-2 h-full w-full relative">
+          <div className="md:col-span-2 h-full w-full relative z-0">
             <MapContainer center={[mapCenter.lat, mapCenter.lng]} zoom={mapZoom} className="h-full w-full">
               <RecenterMap lat={mapCenter.lat} lng={mapCenter.lng} zoom={mapZoom} />
               <TileLayer
                 attribution="© OpenStreetMap"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
-              {(isChefTheme ? filteredChefItems : filteredItems).map((loc) => (
-                <Marker key={loc.id} position={[loc.lat, loc.lng]}>
-                  <Popup>
-                    <div className="p-1 max-w-xs space-y-1">
-                      <h4 className="font-bold text-sm text-slate-800">{loc.title}</h4>
-                      <p className="text-xs text-slate-600">{loc.address}</p>
-                    </div>
-                  </Popup>
-                </Marker>
-              ))}
+              {(isChefTheme ? filteredChefItems : filteredItems).map((loc) => {
+                // Determine who the user is based on the active mode
+                const personUsername = isChefTheme ? loc.chef_name : loc.donor;
+                const personProf = userProfiles[personUsername];
+                const avatar = personProf?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${personUsername}`;
+                const displayName = personProf?.display_name || personUsername;
+
+                return (
+                  <Marker key={loc.id} position={[loc.lat, loc.lng]}>
+                    <Popup className="custom-popup">
+                      <div className="p-1 max-w-[200px] space-y-3">
+                        
+                        <div className="flex items-start gap-3">
+                          {/* CLICKABLE PROFILE PICTURE IN MAP POPUP */}
+                          <img
+                            src={avatar}
+                            alt={personUsername}
+                            onClick={() => setViewingProfileUser(personUsername)}
+                            className={`w-10 h-10 rounded-full object-cover cursor-pointer hover:opacity-80 transition-opacity border-2 shadow-sm shrink-0 ${
+                              isChefTheme ? 'border-amber-200' : 'border-emerald-200'
+                            }`}
+                            title={`View ${displayName}'s profile`}
+                          />
+                          <div className="min-w-0">
+                            <h4 className="font-bold text-sm text-slate-800 leading-tight truncate">{loc.title}</h4>
+                            <p className="text-[10px] text-slate-500 font-medium leading-tight mt-0.5 line-clamp-2">
+                              {loc.address}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* VIEW PROFILE BUTTON */}
+                        <button
+                          onClick={() => setViewingProfileUser(personUsername)}
+                          className={`w-full py-1.5 text-xs font-bold rounded-lg transition-colors ${
+                            isChefTheme 
+                              ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' 
+                              : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                          }`}
+                        >
+                          View {displayName}
+                        </button>
+
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
             </MapContainer>
           </div>
         </div>
@@ -1138,6 +1193,7 @@ export default function App() {
       {showNotificationsModal && (
         <NotificationsModal
           currentUser={currentUser}
+          appMode={appMode} // 👈 Passes mode so colors match
           onClose={() => {
             setShowNotificationsModal(false);
             supabase
@@ -1153,11 +1209,12 @@ export default function App() {
         />
       )}
 
-      {/* SOCIAL PROFILE MODAL */}
+      {/* USER PROFILE MODAL */}
       {viewingProfileUser && (
         <UserProfileModal
           targetUsername={viewingProfileUser}
           currentUser={currentUser}
+          isChefTheme={isChefTheme}
           isSubscribed={subscribedDonors.includes(viewingProfileUser)}
           onToggleSubscribe={handleToggleSubscribe}
           onOpenChat={(targetUsername) => {
@@ -1435,12 +1492,16 @@ export default function App() {
       )}
 
       {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
+      {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
+      {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
       {activeToast && (
         <div className="fixed bottom-6 right-6 bg-slate-900 text-white p-4 rounded-3xl shadow-2xl z-[999999] max-w-sm w-full border border-slate-700 flex flex-col gap-2 animate-bounce-in">
           <div className="flex justify-between items-start">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
-              <h4 className="font-bold text-xs text-emerald-400 uppercase tracking-wider">{activeToast.title}</h4>
+              <span className={`w-2.5 h-2.5 rounded-full ${isChefTheme ? 'bg-amber-500' : 'bg-emerald-500'} animate-ping`}></span>
+              <h4 className={`font-bold text-xs ${isChefTheme ? 'text-amber-400' : 'text-emerald-400'} uppercase tracking-wider`}>
+                {activeToast.title}
+              </h4>
             </div>
             <button
               onClick={() => setActiveToast(null)}
@@ -1468,7 +1529,9 @@ export default function App() {
                   }
                   setActiveToast(null);
                 }}
-                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
+                className={`px-3.5 py-1.5 text-white rounded-xl text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5 ${
+                  isChefTheme ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
                 <MessageSquare className="w-3.5 h-3.5" /> Open Chat
               </button>
