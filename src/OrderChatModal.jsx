@@ -1,12 +1,12 @@
-// OrderChatModal.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, X, MessageSquare, Loader2 } from 'lucide-react';
+import { Send, X, MessageSquare, Loader2, Image, Video, Trash2 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
-export default function OrderChatModal({ order, currentUser, onClose }) {
+export default function OrderChatModal({ order, currentUser, isChefTheme, onClose }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
   const [sendError, setSendError] = useState('');
   const chatEndRef = useRef(null);
 
@@ -14,37 +14,45 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Robustly resolve the chat thread ID regardless of whether it came from 
-  // an order click, a notification click, or a direct message search lookup.
   const resolveChatId = () => {
     if (!order) return '';
     
-    // 1. If it's explicitly passed as a DM or already has a structured id
+    const currentUsername = currentUser?.username || currentUser?.name;
+    const target = order.donor || order.chef_name || order.targetUsername;
+
     if (order.isDirectDm || String(order.id).startsWith('dm_')) {
       return String(order.id);
     }
 
-    // 2. If it came from a notification that mapped order_id as a DM format
     if (order.order_id && String(order.order_id).startsWith('dm_')) {
       return String(order.order_id);
     }
 
-    // 3. If we are looking at a user profile / direct message search target passed via order object
     if (order.targetUsername && currentUser) {
-      const usernames = [currentUser.username || currentUser.name, order.targetUsername].sort();
+      const usernames = [currentUsername, order.targetUsername].sort();
       return `dm_${usernames[0]}_${usernames[1]}`;
     }
 
-    // 4. Default standard order ID
     return String(order.id || order.order_id || '');
   };
 
   const chatId = resolveChatId();
 
   useEffect(() => {
-    if (!chatId) return;
+    if (!chatId || !currentUser) return;
 
     const fetchMessages = async () => {
+      // 1. Check if this chatroom was hidden/deleted on this user's end
+      const { data: hiddenData } = await supabase
+        .from('hidden_chats')
+        .select('*')
+        .eq('user_username', currentUser.username)
+        .eq('order_id', chatId)
+        .maybeSingle();
+
+      const hiddenTime = hiddenData ? new Date(hiddenData.created_at).getTime() : 0;
+
+      // 2. Fetch messages for this chat
       const { data, error } = await supabase
         .from('messages')
         .select('*')
@@ -54,19 +62,22 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       if (error) {
         console.error('Error fetching messages:', error);
       } else if (data) {
-        setMessages(data);
+        // Filter out messages that were sent before the user cleared/deleted the chat on their end
+        const visibleMessages = data.filter((msg) => {
+          if (!hiddenTime) return true;
+          return new Date(msg.created_at).getTime() > hiddenTime;
+        });
+        setMessages(visibleMessages);
       }
       setIsLoading(false);
     };
 
     fetchMessages().then(scrollToBottom);
 
-    // Failsafe polling engine (runs every 3 seconds)
     const pollingInterval = setInterval(() => {
       fetchMessages();
     }, 3000);
 
-    // Supabase Realtime Listener using the uniform chatId
     const channelName = `chat_thread_${chatId.replace(/[^a-zA-Z0-9]/g, '')}`;
     const channel = supabase
       .channel(channelName)
@@ -89,22 +100,34 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
           }
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'messages',
+        },
+        (payload) => {
+          if (payload.old) {
+            setMessages((prev) => prev.filter((m) => String(m.id) !== String(payload.old.id)));
+          }
+        }
+      )
       .subscribe();
 
     return () => {
       clearInterval(pollingInterval);
       supabase.removeChannel(channel);
     };
-  }, [chatId]);
+  }, [chatId, currentUser]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages.length]);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
+  const handleSendMessage = async (mediaUrl = null, mediaType = null) => {
     const textToSend = newMessage.trim();
-    if (!textToSend || !currentUser || !chatId) return;
+    if ((!textToSend && !mediaUrl) || !currentUser || !chatId) return;
 
     setNewMessage('');
     setSendError('');
@@ -117,14 +140,17 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       sender_id: currentUserId,
       sender_username: currentUsername,
       content: textToSend,
+      media_url: mediaUrl,
+      media_type: mediaType,
     };
 
+    // 1. Send the message to the database
     const { data, error } = await supabase.from('messages').insert([msgPayload]).select();
 
     if (error) {
       console.error('Failed to send message:', error);
       setSendError(`Failed to send: ${error.message}`);
-      setNewMessage(textToSend); // Restore input on failure
+      setNewMessage(textToSend);
       return;
     }
 
@@ -136,31 +162,109 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       scrollToBottom();
     }
 
-    // Determine recipient for notifications
-    let recipient = null;
-    const isDmChat = chatId.startsWith('dm_');
-    if (isDmChat) {
-      const parts = chatId.replace('dm_', '').split('_');
-      recipient = parts.find((p) => p !== currentUsername);
-    } else if (order.donor && order.donor !== currentUsername) {
-      recipient = order.donor;
-    } else if (order.claimedByUsername && order.claimedByUsername !== currentUsername) {
-      recipient = order.claimedByUsername;
+    // 2. Resolve Notification Recipient Dynamically
+    try {
+      let recipient = null;
+      const isDmChat = chatId.startsWith('dm_');
+      
+      if (isDmChat) {
+        const parts = chatId.replace('dm_', '').split('_');
+        recipient = parts.find((p) => p !== currentUsername);
+      } else {
+        const otherUserMsg = messages.find(
+          (m) => m.sender_username && m.sender_username !== currentUsername
+        );
+        
+        if (otherUserMsg) {
+          recipient = otherUserMsg.sender_username;
+        } else {
+          recipient = 
+            order?.donor || 
+            order?.chef_name || 
+            order?.targetUsername || 
+            order?.ownerUsername || 
+            order?.claimedByUsername || 
+            order?.user_id;
+        }
+      }
+
+      // 3. Send Notification securely
+      if (recipient && recipient !== currentUsername) {
+        await supabase.from('notifications').insert([
+          {
+            user_id: recipient,
+            type: isDmChat ? 'DIRECT_MESSAGE' : 'ITEM_MESSAGE',
+            order_id: chatId,
+            title: isDmChat
+              ? `💬 New message from @${currentUsername}`
+              : `💬 "${order?.title || 'Item'}"`,
+            body: textToSend || (mediaType ? `Sent a ${mediaType}` : 'New attachment'),
+            is_read: false,
+          },
+        ]);
+      }
+    } catch (notifErr) {
+      console.error('Non-blocking notification error:', notifErr);
+    }
+  };
+
+  // Handle Media Uploading Pipeline (Images / Videos)
+  const handleMediaUpload = async (e, type) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setSendError('');
+
+    const fileExt = file.name.split('.').pop();
+    const fileName = `chat_${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+    
+    const { error: uploadError } = await supabase.storage
+      .from('surplus-images')
+      .upload(fileName, file);
+
+    if (uploadError) {
+      setSendError(`Upload failed: ${uploadError.message}`);
+      setIsUploading(false);
+      return;
     }
 
-    if (recipient) {
-      await supabase.from('notifications').insert([
-        {
-          user_id: recipient,
-          type: isDmChat ? 'DIRECT_MESSAGE' : 'ITEM_MESSAGE',
-          order_id: chatId,
-          title: isDmChat
-            ? `💬 New message from @${currentUsername}`
-            : `💬 Message about "${order.title || 'Item'}"`,
-          body: textToSend,
-          is_read: false,
-        },
-      ]);
+    const { data: publicUrlData } = supabase.storage
+      .from('surplus-images')
+      .getPublicUrl(fileName);
+
+    setIsUploading(false);
+    if (publicUrlData?.publicUrl) {
+      await handleSendMessage(publicUrlData.publicUrl, type);
+    }
+  };
+
+  // Delete singular message (removes from database for all participants)
+  const handleDeleteMessage = async (msgId) => {
+    const { error } = await supabase.from('messages').delete().eq('id', msgId);
+    if (!error) {
+      setMessages((prev) => prev.filter((m) => String(m.id) !== String(msgId)));
+    } else {
+      setSendError(`Failed to delete message: ${error.message}`);
+    }
+  };
+
+  // Delete/Clear entire chatroom view on this user's end only
+  const handleDeleteChatroomOnMyEnd = async () => {
+    if (!window.confirm("Are you sure you want to clear this chat history from your view?")) return;
+
+    const { error } = await supabase.from('hidden_chats').upsert([
+      {
+        user_username: currentUser.username,
+        order_id: chatId,
+        created_at: new Date().toISOString()
+      }
+    ], { onConflict: 'user_username,order_id' });
+
+    if (!error) {
+      onClose();
+    } else {
+      setSendError("Failed to clear chat view on your end.");
     }
   };
 
@@ -169,26 +273,36 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
       <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl flex flex-col h-[550px] border border-slate-100 overflow-hidden">
         
         {/* HEADER */}
-        <div className="p-4 bg-emerald-600 text-white flex justify-between items-center shrink-0">
+        <div className={`p-4 text-white flex justify-between items-center shrink-0 ${isChefTheme ? 'bg-amber-700' : 'bg-emerald-600'}`}>
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-700/60 rounded-xl">
+            <div className={`p-2 rounded-xl ${isChefTheme ? 'bg-amber-800/60' : 'bg-emerald-700/60'}`}>
               <MessageSquare className="w-5 h-5" />
             </div>
             <div>
               <h3 className="font-bold text-sm leading-tight">
-                {order.title || (chatId.startsWith('dm_') ? `Direct Message` : `Chat #${chatId}`)}
+                {order?.title || (chatId.startsWith('dm_') ? `Direct Message` : `Chat #${chatId}`)}
               </h3>
-              <p className="text-[11px] text-emerald-100 font-medium">
-                {chatId.startsWith('dm_') ? 'Direct Chat' : `Chatting about order #${chatId}`}
+              <p className={`text-[11px] font-medium ${isChefTheme ? 'text-amber-100' : 'text-emerald-100'}`}>
+                {chatId.startsWith('dm_') ? 'Direct Chat' : `Chatting about order`}
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 hover:bg-emerald-700 rounded-xl transition-colors text-white"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleDeleteChatroomOnMyEnd}
+              className="px-2.5 py-1.5 bg-black/20 hover:bg-black/40 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
+              title="Delete chatroom on your end"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Clear Chat
+            </button>
+            <button
+              onClick={onClose}
+              className={`p-1.5 rounded-xl transition-colors text-white ${isChefTheme ? 'hover:bg-amber-800' : 'hover:bg-emerald-700'}`}
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {sendError && (
@@ -228,13 +342,36 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
                     {isMe ? 'You' : (senderUser || 'User')}
                   </span>
                   <div
-                    className={`max-w-[80%] px-3.5 py-2 rounded-2xl text-xs shadow-sm font-medium ${
+                    className={`max-w-[80%] px-3.5 py-2 rounded-2xl text-xs shadow-sm font-medium relative group ${
                       isMe
-                        ? 'bg-emerald-600 text-white rounded-br-none'
+                        ? isChefTheme 
+                          ? 'bg-amber-700 text-white rounded-br-none' 
+                          : 'bg-emerald-600 text-white rounded-br-none'
                         : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none'
                     }`}
                   >
-                    {contentText}
+                    {contentText && <p className="leading-relaxed">{contentText}</p>}
+
+                    {/* Media Content: Image */}
+                    {msg.media_type === 'image' && (
+                      <img src={msg.media_url} alt="Shared Attachment" className="mt-2 rounded-xl max-h-48 object-cover w-full" />
+                    )}
+
+                    {/* Media Content: Video */}
+                    {msg.media_type === 'video' && (
+                      <video controls src={msg.media_url} className="mt-2 rounded-xl max-h-48 object-cover w-full" />
+                    )}
+
+                    {/* Delete individual message button (visible on hover for user's own messages) */}
+                    {isMe && (
+                      <button
+                        onClick={() => handleDeleteMessage(msg.id)}
+                        className="absolute -top-2 -left-2 bg-white text-slate-600 hover:text-rose-600 border border-slate-200 p-1 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete message"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -243,21 +380,45 @@ export default function OrderChatModal({ order, currentUser, onClose }) {
           <div ref={chatEndRef} />
         </div>
 
-        {/* INPUT FORM */}
-        <form onSubmit={handleSendMessage} className="p-3 bg-white border-t border-slate-100 flex gap-2 shrink-0">
+        {/* INPUT FORM WITH MEDIA ACTIONS */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSendMessage();
+          }}
+          className="p-3 bg-white border-t border-slate-100 flex items-center gap-2 shrink-0"
+        >
+          {/* Image Upload Icon */}
+          <label className="p-2 text-slate-500 hover:text-emerald-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors" title="Send Image">
+            <Image className="w-4 h-4" />
+            <input type="file" accept="image/*" className="hidden" onChange={(e) => handleMediaUpload(e, 'image')} />
+          </label>
+
+          {/* Video Upload Icon */}
+          <label className="p-2 text-slate-500 hover:text-emerald-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors" title="Send Video">
+            <Video className="w-4 h-4" />
+            <input type="file" accept="video/*" className="hidden" onChange={(e) => handleMediaUpload(e, 'video')} />
+          </label>
+
           <input
             type="text"
-            placeholder="Type a message..."
+            placeholder={isUploading ? "Uploading media..." : "Type a message..."}
+            disabled={isUploading}
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
-            className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50"
+            className={`flex-1 px-3 py-2 border border-slate-200 rounded-xl text-xs outline-none bg-slate-50 ${
+              isChefTheme ? 'focus:ring-2 focus:ring-amber-500' : 'focus:ring-2 focus:ring-emerald-500'
+            }`}
           />
+
           <button
             type="submit"
-            disabled={!newMessage.trim()}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl disabled:bg-slate-300 transition-colors shrink-0"
+            disabled={isUploading || !newMessage.trim()}
+            className={`px-4 py-2.5 text-white rounded-xl disabled:bg-slate-300 transition-colors shrink-0 flex items-center justify-center ${
+              isChefTheme ? 'bg-amber-700 hover:bg-amber-800' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
           >
-            <Send className="w-4 h-4" />
+            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </form>
 

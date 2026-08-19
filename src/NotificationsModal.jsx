@@ -1,11 +1,18 @@
 // NotificationsModal.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Bell, X, CheckCheck, MessageSquare, Package, Sparkles, Loader2 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
-export default function NotificationsModal({ currentUser, onClose, onOpenChat }) {
+export default function NotificationsModal({ currentUser, isChefTheme, onClose, onOpenChat }) {
   const [notifications, setNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // --- AUDIO & COUNT TRACKING REFS ---
+  const prevUnreadCountRef = useRef(0);
+  const isInitialMount = useRef(true);
+  const audioRef = useRef(
+    typeof Audio !== 'undefined' ? new Audio('/sounds/pop-alert.mp3') : null
+  );
 
   const fetchNotifications = async () => {
     if (!currentUser?.username) return;
@@ -25,6 +32,31 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
   useEffect(() => {
     fetchNotifications();
   }, [currentUser?.username]);
+
+  // --- NOTIFICATION SOUND LOGIC ---
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
+
+  useEffect(() => {
+    // 1. Skip playing the sound on the very first load to avoid blasting the user
+    if (isInitialMount.current && !isLoading) {
+      isInitialMount.current = false;
+      prevUnreadCountRef.current = unreadCount;
+      return;
+    }
+
+    // 2. Play sound if data is loaded and the unread count went UP
+    if (!isLoading && unreadCount > prevUnreadCountRef.current) {
+      if (audioRef.current) {
+        audioRef.current.currentTime = 0; // Reset sound to start
+        audioRef.current.play().catch((err) => {
+          console.warn("Browser blocked audio autoplay. User interaction required:", err);
+        });
+      }
+    }
+
+    // 3. Update the reference for the next cycle
+    prevUnreadCountRef.current = unreadCount;
+  }, [unreadCount, isLoading]);
 
   const handleMarkAllAsRead = async () => {
     await supabase
@@ -50,7 +82,6 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
 
     onClose();
 
-    // 1. Robustly extract sender username from title, body, or explicit properties
     const titleMatch = notif.title?.match(/@([a-zA-Z0-9_-]+)/);
     const bodyMatch = notif.body?.match(/@([a-zA-Z0-9_-]+)/);
     const senderUsername = 
@@ -59,7 +90,6 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
       (titleMatch ? titleMatch[1] : null) || 
       (bodyMatch ? bodyMatch[1] : null);
 
-    // 2. Check if the notification is a direct message or chat-related
     const isMessage = 
       notif.type === 'DIRECT_MESSAGE' || 
       notif.type === 'NEW_MESSAGE' || 
@@ -67,7 +97,6 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
       (notif.order_id && notif.order_id.startsWith('dm_'));
 
     if (isMessage) {
-      // Use notif.order_id if it's already a valid chat room ID, otherwise construct the deterministic participant chat ID
       const chatId = (notif.order_id && notif.order_id.startsWith('dm_'))
         ? notif.order_id
         : senderUsername
@@ -81,7 +110,6 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
         isDirectDm: true,
       });
     } else if (notif.order_id) {
-      // Surplus item or order related notification
       const { data: itemData } = await supabase
         .from('surplus_items')
         .select('*')
@@ -96,7 +124,6 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
         }
       );
     } else {
-      // Fallback generic notification click
       onOpenChat({
         id: notif.id,
         title: notif.title || 'Chat',
@@ -109,15 +136,15 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[99999]">
       <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl flex flex-col h-[600px] border border-slate-100 overflow-hidden animate-fade-in">
         
-        {/* HEADER */}
-        <div className="p-5 bg-slate-900 text-white flex justify-between items-center shrink-0">
+        {/* HEADER - Theme Dynamic */}
+        <div className={`p-5 text-white flex justify-between items-center shrink-0 ${isChefTheme ? 'bg-amber-950' : 'bg-slate-900'}`}>
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-emerald-600 text-white rounded-2xl shadow-md">
+            <div className={`p-2.5 rounded-2xl shadow-md text-white ${isChefTheme ? 'bg-amber-600' : 'bg-emerald-600'}`}>
               <Bell className="w-5 h-5" />
             </div>
             <div>
               <h3 className="font-extrabold text-base leading-tight">Notifications & Messages</h3>
-              <p className="text-xs text-slate-400 font-medium">Stay updated on your surplus rescue activity</p>
+              <p className="text-xs text-slate-400 font-medium">Stay updated on your activity</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -126,7 +153,7 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
               title="Mark all as read"
               className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5"
             >
-              <CheckCheck className="w-4 h-4 text-emerald-400" /> Mark Read
+              <CheckCheck className={`w-4 h-4 ${isChefTheme ? 'text-amber-400' : 'text-emerald-400'}`} /> Mark Read
             </button>
             <button
               onClick={onClose}
@@ -156,13 +183,15 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
                 className={`p-4 rounded-2xl border transition-all cursor-pointer flex gap-3.5 items-start ${
                   notif.is_read
                     ? 'bg-white border-slate-200 opacity-80 hover:opacity-100'
+                    : isChefTheme 
+                    ? 'bg-amber-50/50 border-amber-200 shadow-sm hover:shadow' 
                     : 'bg-emerald-50/50 border-emerald-200 shadow-sm hover:shadow'
                 }`}
               >
                 <div
                   className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
                     notif.type === 'DIRECT_MESSAGE' || notif.type === 'NEW_MESSAGE' || notif.type === 'ITEM_MESSAGE'
-                      ? 'bg-emerald-600 text-white'
+                      ? isChefTheme ? 'bg-amber-600 text-white' : 'bg-emerald-600 text-white'
                       : notif.type === 'ITEM_CLAIMED'
                       ? 'bg-amber-500 text-amber-950'
                       : 'bg-slate-800 text-white'
@@ -181,7 +210,7 @@ export default function NotificationsModal({ currentUser, onClose, onOpenChat })
                   <div className="flex justify-between items-center mb-1">
                     <h4 className="font-bold text-slate-900 text-xs tracking-tight">{notif.title}</h4>
                     {!notif.is_read && (
-                      <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0"></span>
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${isChefTheme ? 'bg-amber-600' : 'bg-emerald-600'}`}></span>
                     )}
                   </div>
                   <p className="text-xs text-slate-600 leading-relaxed font-medium">{notif.body}</p>

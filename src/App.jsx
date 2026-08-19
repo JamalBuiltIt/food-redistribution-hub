@@ -197,13 +197,20 @@ export default function App() {
     phone: '',
   });
 
-  // Image file upload state
   const [imageFile, setImageFile] = useState(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+
+  // --- AUDIO REFS ADDED HERE ---
+  const prevUnreadCountRef = useRef(0);
+  const isInitialMount = useRef(true);
+  const audioRef = useRef(
+    typeof Audio !== 'undefined' ? new Audio('/sounds/pop-alert.mp3') : null
+  );
 
   // ==========================================
   // 2. ALL EFFECTS SAFELY BELOW STATE
   // ==========================================
+
   useEffect(() => {
     const syncUserProfile = async () => {
       if (!currentUser?.username) return;
@@ -293,6 +300,26 @@ export default function App() {
       supabase.removeChannel(notifChannel);
     };
   }, [currentUser?.username]);
+
+  // --- AUDIO TRIGGER EFFECT ADDED HERE ---
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      prevUnreadCountRef.current = unreadCount;
+      return;
+    }
+
+    if (unreadCount > prevUnreadCountRef.current) {
+      if (audioRef.current) {
+        audioRef.current.currentTime = 0; 
+        audioRef.current.play().catch((err) => {
+          console.warn("Click anywhere on the page to enable sound:", err);
+        });
+      }
+    }
+
+    prevUnreadCountRef.current = unreadCount;
+  }, [unreadCount]);
 
   const handleProfileUpdated = (updatedFields) => {
     const updatedUser = {
@@ -439,7 +466,6 @@ export default function App() {
   useEffect(() => {
     fetchChefListings();
 
-    // Add this inside your main useEffect in App.jsx
     const chefChannel = supabase
       .channel('public:home_chef_listings')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'home_chef_listings' }, (payload) => {
@@ -452,8 +478,6 @@ export default function App() {
         }
       })
       .subscribe();
-
-    // Make sure to add supabase.removeChannel(chefChannel) to your cleanup return function!
 
     return () => supabase.removeChannel(chefChannel);
   }, []);
@@ -540,7 +564,6 @@ export default function App() {
       sendBrowserPushNotification('Order Placed', `Directions set to Chef ${plate.chef_name}'s kitchen.`);
       fetchChefListings();
 
-      // Set plate as active tracking order with chef as donor for chat
       const orderedPlate = {
         ...plate,
         isClaimed: true,
@@ -863,7 +886,7 @@ export default function App() {
       {activeView === 'dashboard' && (
         <UserDashboard
           currentUser={currentUser}
-          appMode={appMode} // 👈 Added
+          appMode={appMode}
           onSelectOrderForTracking={(order) => {
             setActiveTrackingOrder(order);
             setActiveView('tracking');
@@ -1144,7 +1167,6 @@ export default function App() {
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
               {(isChefTheme ? filteredChefItems : filteredItems).map((loc) => {
-                // Determine who the user is based on the active mode
                 const personUsername = isChefTheme ? loc.chef_name : loc.donor;
                 const personProf = userProfiles[personUsername];
                 const avatar = personProf?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${personUsername}`;
@@ -1154,9 +1176,7 @@ export default function App() {
                   <Marker key={loc.id} position={[loc.lat, loc.lng]}>
                     <Popup className="custom-popup">
                       <div className="p-1 max-w-[200px] space-y-3">
-                        
                         <div className="flex items-start gap-3">
-                          {/* CLICKABLE PROFILE PICTURE IN MAP POPUP */}
                           <img
                             src={avatar}
                             alt={personUsername}
@@ -1174,7 +1194,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* VIEW PROFILE BUTTON */}
                         <button
                           onClick={() => setViewingProfileUser(personUsername)}
                           className={`w-full py-1.5 text-xs font-bold rounded-lg transition-colors ${
@@ -1185,7 +1204,6 @@ export default function App() {
                         >
                           View {displayName}
                         </button>
-
                       </div>
                     </Popup>
                   </Marker>
@@ -1200,7 +1218,7 @@ export default function App() {
       {showNotificationsModal && (
         <NotificationsModal
           currentUser={currentUser}
-          appMode={appMode} // 👈 Passes mode so colors match
+          isChefTheme={isChefTheme}
           onClose={() => {
             setShowNotificationsModal(false);
             supabase
@@ -1494,12 +1512,11 @@ export default function App() {
         <OrderChatModal
           order={activeChatOrder}
           currentUser={currentUser}
+          isChefTheme={isChefTheme}
           onClose={() => setActiveChatOrder(null)}
         />
       )}
 
-      {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
-      {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
       {/* IN-APP FLOATING TOAST NOTIFICATION POPUP */}
       {activeToast && (
         <div className="fixed bottom-6 right-6 bg-slate-900 text-white p-4 rounded-3xl shadow-2xl z-[999999] max-w-sm w-full border border-slate-700 flex flex-col gap-2 animate-bounce-in">
